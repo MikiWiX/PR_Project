@@ -65,7 +65,7 @@ int add_int_ordered(int *num, int_array *set, int orderCount) {
         int index = set->top * set->elemSize;
         for(int i=set->top-1; i>=0; i--){ // for each element
             index -= set->elemSize;
-            if(isGreater(&set->array[index], num, orderCount)){ //if new element index is lower
+            if(!isGreater(&set->array[index], num, orderCount)){ //if new element index is lower
                 move_element(i+1, i, set);
             } else {
                 set_element(i+1, num, set);

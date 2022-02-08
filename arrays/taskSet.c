@@ -23,6 +23,15 @@ int addElem(Task elem, TaskSet *set) {
     }
 }
 
+int removeElemLeakign(int index, TaskSet *set) {
+    if (set->top > 0) {
+        set->array[index] = set->array[set->top--];
+        return 1;
+    } else {
+        return 0;
+    }
+}
+
 int removeElem(int index, TaskSet *set) {
     if (set->top > 0) {
         dropTask(set->array[index]);

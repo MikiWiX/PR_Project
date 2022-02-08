@@ -22,6 +22,7 @@ typedef struct TaskSet {
 
 TaskSet *createTaskArray(int len);
 int addElem(Task elem, TaskSet* set);
+int removeElemLeakign(int index, TaskSet *set);
 int removeElem(int index, TaskSet *set);
 void dropTaskArray(TaskSet *set);
 

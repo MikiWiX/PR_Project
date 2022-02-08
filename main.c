@@ -168,10 +168,13 @@ void receive_task_from_librarian(Task task) {
     Task *outTask = findTask(task.libID, task.taskID, unreceivedTaskSet, &outIndex);
     if(outIndex >= 0){ //there is a task in unrevceived ones
 
-        if(outTask->isDone) { 
+        if(!outTask->isDone) { 
             addElem(*outTask, taskSet); // if it is not yet finished
+            removeElemLeakign(outIndex, unreceivedTaskSet); // anyway remove task from unreceived
+        } else {
+            removeElem(outIndex, unreceivedTaskSet); // anyway remove task from unreceived
         }
-        removeElem(outIndex, unreceivedTaskSet); // anyway remove task from unreceived
+        
 
     } else {
         addElem(task, taskSet);
@@ -340,7 +343,6 @@ int myNextLamportIsIn(int startingIndex, int_array *set, int setCap, int require
 }
 
 int myNextLamportWentIn(int startingIndex, int_array *set, int setCap, int requiredACK) {
-    
     for(int i=startingIndex; i<setCap; i++){
     
         int *elem = get_int(i, set);
@@ -359,7 +361,7 @@ void broadcastLamport_REQ(int_array *quege, int TAG) {
     broadcast(send_buffer, 0, 2, TAG);
 
     int toAdd[3] = {LAMPORT_CLOCK, pid, 0};
-    add_int_ordered(toAdd, quege, 2);//add my req to list
+    int index = add_int_ordered(toAdd, quege, 2);//add my req to list
 }
 
 void acceptTask(Task task) {
@@ -432,7 +434,6 @@ void forEachElementEntered(int TAG, int_array *quege, int quegeCap){
     if(myIndex >= 0) {
         int *elem = get_int(myIndex, quege);
         while (myIndex >= 0){
-
             // FOR EACH ELEM ENTERED
 
             switch(TAG){
@@ -494,7 +495,6 @@ void dealWithLamport_ACK(int *recvBuffer, MPI_Status *recvStatus, int_array *que
     printf("          PID %i : SLIP ACK Recv! from: %i\n", pid, recvStatus->MPI_SOURCE);
     int lamport_out;
     int index = find_my_lamport_by_value(recvBuffer[1], quege, &lamport_out); 
-    
     if(index >= 0){ // find REQ and increase its ACK counter
         get_int(index, quege)[2]++;
         forEachElementEntered(recvStatus->MPI_TAG, quege, quegeCap);
@@ -549,7 +549,7 @@ void broadcastRELEASE(int libID, int taskID) {
     // TODO for each client in group
     for(int i=0; i<pcount; i++){
         if(i != libID && i != pid){
-            //printf("PID %i : REL Sent! to %i \n", pid, i);
+            printf("PID %i : REL Sent! to %i \n", pid, i);
             MPI_Bsend(sendBuffer, 3, MPI_INT, i, TASK_REL, MPI_COMM_WORLD);
         }
     }
@@ -560,7 +560,7 @@ void sendACK(int target, Task *task) {
     int sendBuffer[4] = {++LAMPORT_CLOCK, task->libID, task->taskID, task->poolSize}; // lamport, libID, taskID
     MPI_Bsend(sendBuffer, 4, MPI_INT, target, TASK_ACK, MPI_COMM_WORLD);
 
-    //printf("PID %i : ACK Sent! to %i\n", pid, target);
+    printf("PID %i : ACK Sent! to %i\n", pid, target);
 }
 
 
@@ -570,7 +570,7 @@ void broadcastREQ(Task *task){
     // TODO for each client in group
     for(int i=0; i<pcount; i++){
         if(i != task->libID && i != pid){
-            //printf("PID %i : REQ Sent! to %i \n", pid, i);
+            printf("PID %i : REQ Sent! to %i \n", pid, i);
             MPI_Bsend(sendBuffer, 4, MPI_INT, i, TASK_REQ, MPI_COMM_WORLD);
         }
     }
@@ -584,21 +584,21 @@ void performPendingACK(Task *task) {
 }
 
 void dealWithTASK(int *recvBuffer, MPI_Status *recvStatus) {
-    //printf("PID %i : TASK Recv! from: %i\n", pid, recvStatus->MPI_SOURCE);
+    printf("PID %i : TASK Recv! from: %i\n", pid, recvStatus->MPI_SOURCE);
     Task newTask = getTask(recvBuffer[1], recvBuffer[2], recvBuffer[3]);
     receive_task_from_librarian(newTask);
 }
 
 void dealWithREQ(int *recvBuffer, MPI_Status *recvStatus) {
-    //printf("PID %i : REQ Recv! from: %i\n", pid, recvStatus->MPI_SOURCE);
+    printf("PID %i : REQ Recv! from: %i\n", pid, recvStatus->MPI_SOURCE);
     int foundIndex = -1;
     Task *task;
     task = findTaskByID(recvBuffer[1], recvBuffer[2], true, &foundIndex); // check if task is pending
-
+    
     if(foundIndex == -1){ //if not found
         int *maxID = get_librarian_max_taskID(recvBuffer[1], recvBuffer[2]);
         if( *maxID < recvBuffer[2] && foundIndex != -3){ // if above task max id AND isNotDone -> add a new unreceived task
-            //printf("PID %i : TASK Recv! from: %i\n", pid, recvStatus->MPI_SOURCE);
+            printf("PID %i : TASK Recv! from: %i\n", pid, recvStatus->MPI_SOURCE);
             Task newTask = getTask(recvBuffer[1], recvBuffer[2], recvBuffer[3]);
             sendACK(recvStatus->MPI_SOURCE, &newTask);
             receive_task_from_conan(newTask);
@@ -617,7 +617,7 @@ void dealWithREQ(int *recvBuffer, MPI_Status *recvStatus) {
 }
 
 void dealWithACK(int *recvBuffer, MPI_Status *recvStatus) {
-    //printf("PID %i : ACK Recv! from: %i\n", pid, recvStatus->MPI_SOURCE);
+    printf("PID %i : ACK Recv! from: %i\n", pid, recvStatus->MPI_SOURCE);
     int foundIndex = -1;
     Task *task =  findTaskByID(recvBuffer[1], recvBuffer[2], true, &foundIndex); // check if task is pending
 
@@ -643,9 +643,10 @@ void dealWithACK(int *recvBuffer, MPI_Status *recvStatus) {
 }
 
 void dealWithRELEASE(int *recvBuffer, MPI_Status *recvStatus) {
-    //printf("PID %i : REL Recv! from: %i\n", pid, recvStatus->MPI_SOURCE);
+    printf("PID %i : REL Recv! from: %i\n", pid, recvStatus->MPI_SOURCE);
     int foundIndex = -1;
     Task *task = findTaskByID(recvBuffer[1], recvBuffer[2], false, &foundIndex); // check if task is pending
+
     if(foundIndex == -1){ //if not
         //ignore it
     } else if (foundIndex >= 0){ // else if it is pending
