@@ -5,15 +5,21 @@
 #include <unistd.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <string.h>
 
 #include "arrays/taskSet.h"
 #include "arrays/int-array.h"
 #include "tools/receiver.h"
+#include "tools/printer.h"
 
 
 // ---------- GLOBAL VARIABLES ---------- //
 
 
+
+// MAX AMOUNTS!
+#define MAX_LAMPORT_QUEGE_SIZE 100
+#define MAX_TASK_QUEGE_SIZE 100
 
 // --- ROLE ENUM
 int ROLE;
@@ -24,7 +30,10 @@ pthread_mutex_t slipLock, washLock;
 
 // --- PROCESS GLOBAL VARIABLES
 int pid, pcount;
-int libCount = 1, conanCount = 3;
+int libCount, conanCount;
+
+// --- INTERVALS
+int LIB_TIME, TASK_TIME, WASH_TIME;
 
 // --- LAMPORT
 int LAMPORT_CLOCK;
@@ -42,10 +51,10 @@ int LAMPORT_CLOCK;
 #define WASH_REL 10
 
 // --- TASK LIST
-int taskBufferSize = 10;
 int_array *libMaxTaskID;
-TaskSet *taskSet, *unreceivedTaskSet;
+TaskSet *taskSet;
 Task ongoingTask;
+TaskSet *onlyMyTasks;
 
 // --- CONAN STATE FLAGS AND COUNTER
 #define FREE 0 // so this evaluates to false
@@ -54,15 +63,11 @@ Task ongoingTask;
 
 // --- SLIPS ZONE
 int_array *slipQuege, *washQuege;
-int slipQuegeCapacity = 3, washQuegeCapacity = 1;
+int slipQuegeCapacity, washQuegeCapacity;
 volatile int BUSY; // to use with above
 volatile int washToRequest = 0; // to use as BUSY between threads - mutex this
 volatile int myDirtySlipCount = 0, myCleanSlips = 0;
 int myLastSlipInLamportValue = -1, myLastWashInLamportValue = -1;
-
-// --- BUFFERS --- WARNING! NOT DYNAMIC, MAY OVERFLOW
-int bufSize = 8000;
-int buf[8000];
 
 // --- MPI TYPE
 MPI_Datatype MPI_TASK_STRUCT;
@@ -72,7 +77,6 @@ ReceiverData mainReceiver;
 MPI_Status status;
 MPI_Request bcastReq; // init in main
 int taskData[4];
-int tasksToREQ = 0;
 
 
 
@@ -129,15 +133,6 @@ int comparePriority(int pid1, int lamport1, int pid2, int lamport2) {
         *outIndex = -2;
         return &ongoingTask;
     }
-    task = findTask(libID, taskID, unreceivedTaskSet, outIndex);
-    if(*outIndex >= 0){
-        if(pendingOnly && task->isDone){
-            *outIndex = -3;
-            return 0;
-        }
-        *outIndex = *outIndex + taskSet->len;
-        return task;
-    }
     *outIndex = -1;
     return 0;
 }
@@ -160,52 +155,21 @@ void update_librarian_max_taskID(int libID, int taskID){
     }
 }
 
-void receive_task_from_librarian(Task task) {
-
-    update_librarian_max_taskID(task.libID, task.taskID);
-
-    int outIndex = -1;
-    Task *outTask = findTask(task.libID, task.taskID, unreceivedTaskSet, &outIndex);
-    if(outIndex >= 0){ //there is a task in unrevceived ones
-
-        if(!outTask->isDone) { 
-            addElem(*outTask, taskSet); // if it is not yet finished
-            removeElemLeakign(outIndex, unreceivedTaskSet); // anyway remove task from unreceived
-        } else {
-            removeElem(outIndex, unreceivedTaskSet); // anyway remove task from unreceived
-        }
-        
-
-    } else {
-        addElem(task, taskSet);
-    }
-}
-
-void receive_task_from_conan(Task task) {
-    addElem(task, unreceivedTaskSet);
-}
-
-void finish_task_from_librarian(int index) {
-    removeElem(index, taskSet);
-}
-
-void finish_task_from_conan(int index) {
-    unreceivedTaskSet->array[index].isDone = true;
-}
-
-void finish_task(int absoluteIndex){
-    if(absoluteIndex < taskSet->len){ // if it is in received tasks
-        finish_task_from_librarian(absoluteIndex);
-    } else { // if unreceived tasks
-        finish_task_from_conan(absoluteIndex - taskSet->len);
-    }
-}
-
 
 
 // ---------- LIBRARIAN ---------- //
 
 
+
+int getRandomArray(int *arr, int len, int minValue) {
+    int arrLen = 0;
+    for (int i=minValue; i<len+minValue; i++) {
+        if( rand()%2 == 0 ){
+            arr[arrLen++] = i;
+        }
+    }
+    return arrLen;
+}
 
 /*
  * main loop for librarian
@@ -213,35 +177,49 @@ void finish_task(int absoluteIndex){
  */
 void runLibrarian_Loop() {
 
-    MPI_Buffer_attach(buf, bufSize);
+    // buffer
+    int messageMaxSize = 5 + conanCount;
+    int messageMaxSizeByte = messageMaxSize * sizeof(int) + MPI_BSEND_OVERHEAD;
+    int bufSizeByte = messageMaxSizeByte * conanCount;
 
-    ROLE = 1;
+    int *buf = malloc(bufSizeByte);
+    MPI_Buffer_attach(buf, bufSizeByte);
+
+    ROLE = LIB;
 
     taskData[0] = 1; //lamport
     taskData[1] = pid; //libID
     taskData[2] = 0; //taskID
-    taskData[3] = pcount; //pool size
+
+    int pidArr[conanCount];
+
+    time_t t;
+    srand((unsigned) time(&t));
 
     while(true){
         taskData[0]++;
         taskData[2]++;
         // Broadcast lamport, libID, taskID
 
-        for (int i=0; i<pcount; i++) {
-            if(i != pid){
-                MPI_Bsend(taskData, 4, MPI_INT, i, TASK_NEW, MPI_COMM_WORLD);
-            }
+        // 'randomly' draw proecss to involve
+        do {
+            taskData[3] = getRandomArray(pidArr, conanCount, libCount);
+        } while (taskData[3] <= 0);
+
+        int msgLen = 5 + taskData[3];
+        memcpy(&taskData[4], pidArr, taskData[3] * sizeof(int));
+
+        printNewTask(STYLE_NEW, pid, LAMPORT_CLOCK, P_BROADCASTING, taskData[1], taskData[2], pidArr, taskData[3]);
+
+        for (int i=0; i<taskData[3]; i++) {
+            MPI_Bsend(taskData, msgLen, MPI_INT, pidArr[i], TASK_NEW, MPI_COMM_WORLD);
         }
 
-        //MPI_Ibcast(taskData, 4, MPI_INT, 0, MPI_COMM_WORLD, &bcastReq);
-        char b[6] = "sent\n";
-        write(1, b, 5);
-
-        sleep(20);
+        sleep(LIB_TIME);
     }
 
-    MPI_Buffer_detach(buf, &bufSize);
-    
+    MPI_Buffer_detach(buf, &bufSizeByte);
+    free(buf);
 }
 
 
@@ -267,7 +245,7 @@ int find_my_lamport(int occurence, int_array *set, int *lamport_out) {
     for(int i=0; i<set->top; i++){
         int index = i * set->elemSize;
         if(set->array[index+1] == pid){
-            if(++occ_couter == occurence) {
+            if(occ_couter++ >= occurence) {
                 *lamport_out = set->array[index];
                 return i;
             }
@@ -288,17 +266,39 @@ int find_my_lamport_by_value(int searched_lamport, int_array *set, int *lamport_
 }
 
 void broadcast(int *send_buffer, int libID, int buffer_size, int TAG) {
+    char *sendTAG;
+    char *sendOP;
+    switch(TAG){
+        case SLIP_REQ:
+        case WASH_REQ:
+            sendTAG = P_REQ;
+            break;
+        case SLIP_REL:
+        case WASH_REL:
+            sendTAG = P_REL;
+            break;
+    }
+    switch(TAG){
+        case SLIP_REQ:
+        case SLIP_REL:
+            sendOP = P_SLIP;
+            break;
+        case WASH_REQ:
+        case WASH_REL:
+            sendOP = P_WASH;
+            break;
+    }
     // TODO for each client in group
     for(int i=0; i<pcount; i++){
         if(i != libID && i != pid){
-            printf("          PID %i : SLIP TAG Cast! to %i \n", pid, i);
+            printCommSend(pid, LAMPORT_CLOCK, sendTAG, sendOP, i);
             MPI_Bsend(send_buffer, buffer_size, MPI_INT, i, TAG, MPI_COMM_WORLD);
         }
     }
 }
 
 void sendLamport_ACK(int target, int originalREQLamport, int TAG) {
-    printf("          PID %i : SLIP ACK Sent! to %i \n", pid, target);
+    printCommSend(pid, LAMPORT_CLOCK, P_ACK, P_SLIP, target);
     int send_buffer[2] = {++LAMPORT_CLOCK, originalREQLamport};
     MPI_Bsend(send_buffer, 2, MPI_INT, target, TAG, MPI_COMM_WORLD);
 }
@@ -343,6 +343,7 @@ int myNextLamportIsIn(int startingIndex, int_array *set, int setCap, int require
 }
 
 int myNextLamportWentIn(int startingIndex, int_array *set, int setCap, int requiredACK) {
+    printf("requiredACK: %i\nsetCap: %i\n", requiredACK, setCap);
     for(int i=startingIndex; i<setCap; i++){
     
         int *elem = get_int(i, set);
@@ -358,6 +359,14 @@ int myNextLamportWentIn(int startingIndex, int_array *set, int setCap, int requi
 
 void broadcastLamport_REQ(int_array *quege, int TAG) {
     int send_buffer[1] = {++LAMPORT_CLOCK};
+    switch(TAG) {
+        case SLIP_REQ:
+            printSlip(STYLE_SLIP, pid, LAMPORT_CLOCK, P_REQUESTING, LAMPORT_CLOCK, pid);
+            break;
+        case WASH_REQ:
+            printWash(STYLE_WASH, pid, LAMPORT_CLOCK, P_REQUESTING, LAMPORT_CLOCK, pid);
+            break;
+    }
     broadcast(send_buffer, 0, 2, TAG);
 
     int toAdd[3] = {LAMPORT_CLOCK, pid, 0};
@@ -378,13 +387,13 @@ void takeOffYoutPanties() {
 }
 
 void *moonwalkingWithSLipsOnly_Thread() {
-    sleep(5);
+    sleep(TASK_TIME);
     takeOffYoutPanties();
 }
 
 void wearFreshSlips() {
     BUSY = HAVE_SLIPS;
-    printf("Process: %i going out into the city...\n", pid);
+    styledPrintln(STYLE_CUSTOM, pid, LAMPORT_CLOCK, "Going into the city...");
     // task
     pthread_t tid1;
     pthread_create(&tid1, NULL, moonwalkingWithSLipsOnly_Thread, NULL);
@@ -412,17 +421,17 @@ void putCleanButUsedPantiesBack() {
     pthread_mutex_unlock(&washLock);
 }
 
-void *slipDesinfect_Thread() {
-    sleep(5);
+void *slipDisinfect_Thread() {
+    sleep(WASH_TIME);
     putCleanButUsedPantiesBack();
 }
 
 void putDirtyNastySlipsToWash() {
     myDirtySlipCount--;
-    printf("Process: %i renting a washing machine...\n", pid);
+    styledPrintln(STYLE_CUSTOM, pid, LAMPORT_CLOCK, "Cleaning slips with love and passion...");
     // task
     pthread_t tid2;
-    pthread_create(&tid2, NULL, slipDesinfect_Thread, NULL);
+    pthread_create(&tid2, NULL, slipDisinfect_Thread, NULL);
     pthread_detach(tid2);
 }
 
@@ -431,6 +440,7 @@ void forEachElementEntered(int TAG, int_array *quege, int quegeCap){
 
     int minACK = getMinimumACK(quege, quegeCap);
     int myIndex = myNextLamportWentIn(0, quege, quegeCap, minACK);
+    printf("myIndex: %i\n", myIndex);
     if(myIndex >= 0) {
         int *elem = get_int(myIndex, quege);
         while (myIndex >= 0){
@@ -440,11 +450,13 @@ void forEachElementEntered(int TAG, int_array *quege, int quegeCap){
                 case SLIP_REL:
                 case SLIP_ACK:
                 case SLIP_REQ:
+                    printSlip(STYLE_SLIP, pid, LAMPORT_CLOCK, P_OBTAINING, elem[0], pid);
                     wearFreshSlips();
                     break;
                 case WASH_REL:
                 case WASH_ACK:
                 case WASH_REQ:
+                    printWash(STYLE_WASH, pid, LAMPORT_CLOCK, P_OBTAINING, elem[0], pid);
                     putDirtyNastySlipsToWash();
                     break;
             }
@@ -456,7 +468,16 @@ void forEachElementEntered(int TAG, int_array *quege, int quegeCap){
 }
 
 void broadcastLamport_REL(int_array *quege, int quegeCap, int TAG, int index) {
-    int send_buffer[2] = {++LAMPORT_CLOCK, (int)*get_int(index, quege)};
+    int *elem = get_int(index, quege);
+    int send_buffer[2] = {++LAMPORT_CLOCK, elem[0]};
+    switch(TAG) {
+        case SLIP_REL:
+            printSlip(STYLE_SLIP, pid, LAMPORT_CLOCK, P_RELEASING, elem[0], elem[1]);
+            break;
+        case WASH_REL:
+            printWash(STYLE_WASH, pid, LAMPORT_CLOCK, P_RELEASING, elem[0], elem[1]);
+            break;
+    }
     broadcast(send_buffer, 0, 2, TAG);
 
     int lamportOut;
@@ -479,20 +500,25 @@ void releasePanties() {
 
     for (int i=0; i<local; i++) {
 
-        printf("Process: %i Returning clean panties...\n", pid);
-
         int lamport1;
         int index1 = find_my_lamport(0, washQuege, &lamport1);
-        broadcastLamport_REL(washQuege, washQuegeCapacity, WASH_REL, index1);
+        if(index1 >= 0) {
+            broadcastLamport_REL(washQuege, washQuegeCapacity, WASH_REL, index1);
 
+        }
+        
         int lamport2;
         int index2 = find_my_lamport(0, slipQuege, &lamport1);
-        broadcastLamport_REL(slipQuege, slipQuegeCapacity, SLIP_REL, index2);
+        if(index2 >= 0){
+            broadcastLamport_REL(slipQuege, slipQuegeCapacity, SLIP_REL, index2);
+        }
+        
+        styledPrintln(STYLE_CUSTOM, pid, LAMPORT_CLOCK, "Putting clean panties back...");
     }
 }
 
 void dealWithLamport_ACK(int *recvBuffer, MPI_Status *recvStatus, int_array *quege, int quegeCap) {
-    printf("          PID %i : SLIP ACK Recv! from: %i\n", pid, recvStatus->MPI_SOURCE);
+    printCommRecv(pid, LAMPORT_CLOCK, P_ACK, P_SLIP, recvStatus->MPI_SOURCE);
     int lamport_out;
     int index = find_my_lamport_by_value(recvBuffer[1], quege, &lamport_out); 
     if(index >= 0){ // find REQ and increase its ACK counter
@@ -514,8 +540,8 @@ void sendACKbyTAG(int source, int lamport, int TAG) {
 } 
 
 void dealWithLamport_REQ(int *recvBuffer, MPI_Status *recvStatus, int_array *quege, int quegeCap) {
-    printf("          PID %i : SLIP REQ Recv! from: %i\n", pid, recvStatus->MPI_SOURCE);
-    int buffer[3] = {recvBuffer[0], recvStatus->MPI_SOURCE, 0}; // source lamport, suurce PID, ACK counter
+    printCommRecv(pid, LAMPORT_CLOCK, P_REQ, P_SLIP, recvStatus->MPI_SOURCE);
+    int buffer[3] = {recvBuffer[0], recvStatus->MPI_SOURCE, 0}; // source lamport, source PID, ACK counter
     int index = add_int_ordered(buffer, quege, 2);
     int lamportOut;
     int myFirst = find_my_lamport(0, quege, &lamportOut);
@@ -526,7 +552,7 @@ void dealWithLamport_REQ(int *recvBuffer, MPI_Status *recvStatus, int_array *que
 
 
 void dealWithLamport_REL(int *recvBuffer, MPI_Status *recvStatus, int_array *quege, int quegeCap) {
-    printf("          PID %i : SLIP REL Recv! from: %i\n", pid, recvStatus->MPI_SOURCE);
+    printCommRecv(pid, LAMPORT_CLOCK, P_REL, P_SLIP,recvStatus->MPI_SOURCE);
     int index = find_any_lamport_by_value(recvBuffer[1], recvStatus->MPI_SOURCE, quege); 
     if(index != -1){ // search for REQ and remove it; check if my occurences are inside critical section
         remove_int_ordered(index, quege);
@@ -544,36 +570,42 @@ void dealWithLamport_REL(int *recvBuffer, MPI_Status *recvStatus, int_array *que
 
 
 
-void broadcastRELEASE(int libID, int taskID) {
-    int sendBuffer[3] = {++LAMPORT_CLOCK, libID, taskID}; // lamport, libID, taskID
+void broadcastRELEASE(Task *task) {
+    int sendBuffer[3] = {++LAMPORT_CLOCK, task->libID, task->taskID}; // lamport, libID, taskID
+    printTask(STYLE_TASK, pid, LAMPORT_CLOCK, P_RELEASING, task->libID, task->taskID);
     // TODO for each client in group
-    for(int i=0; i<pcount; i++){
-        if(i != libID && i != pid){
-            printf("PID %i : REL Sent! to %i \n", pid, i);
-            MPI_Bsend(sendBuffer, 3, MPI_INT, i, TASK_REL, MPI_COMM_WORLD);
+    for(int i=0; i<task->poolSize; i++){
+        if(task->participants[i] != pid){
+            printCommSend(pid, LAMPORT_CLOCK, P_REL, P_TASK, i);
+            MPI_Bsend(sendBuffer, 3, MPI_INT, task->participants[i], TASK_REL, MPI_COMM_WORLD);
         }
     }
 }
 
-void sendACK(int target, Task *task) {
+void sendACKRawParams(int target, int libID, int taskID, int poolSize) {
+    printCommSend(pid, LAMPORT_CLOCK, P_ACK, P_TASK, target);
 
-    int sendBuffer[4] = {++LAMPORT_CLOCK, task->libID, task->taskID, task->poolSize}; // lamport, libID, taskID
+    int sendBuffer[4] = {++LAMPORT_CLOCK, libID, taskID, poolSize}; // lamport, libID, taskID
     MPI_Bsend(sendBuffer, 4, MPI_INT, target, TASK_ACK, MPI_COMM_WORLD);
-
-    printf("PID %i : ACK Sent! to %i\n", pid, target);
 }
-
+void sendACK(int target, Task *task) {
+    sendACKRawParams(target, task->libID, task->taskID, task->poolSize);
+}
 
 void broadcastREQ(Task *task){
     task->REQ_Lamport = ++LAMPORT_CLOCK;
     int sendBuffer[4] = {LAMPORT_CLOCK, task->libID, task->taskID, task->poolSize}; // lamport, libID, taskID
+
+    printTask(STYLE_TASK, pid, LAMPORT_CLOCK, P_REQUESTING, task->libID, task->taskID);
     // TODO for each client in group
-    for(int i=0; i<pcount; i++){
-        if(i != task->libID && i != pid){
-            printf("PID %i : REQ Sent! to %i \n", pid, i);
-            MPI_Bsend(sendBuffer, 4, MPI_INT, i, TASK_REQ, MPI_COMM_WORLD);
+    for(int i=0; i<task->poolSize; i++){
+        if(task->participants[i] != pid){
+            printCommSend(pid, LAMPORT_CLOCK, P_REQ, P_TASK, i);
+            MPI_Bsend(sendBuffer, 4, MPI_INT, task->participants[i], TASK_REQ, MPI_COMM_WORLD);
         }
     }
+
+    task->isDone = 1;
 }
 
 void performPendingACK(Task *task) {
@@ -584,24 +616,28 @@ void performPendingACK(Task *task) {
 }
 
 void dealWithTASK(int *recvBuffer, MPI_Status *recvStatus) {
-    printf("PID %i : TASK Recv! from: %i\n", pid, recvStatus->MPI_SOURCE);
+    printCommRecv(pid, LAMPORT_CLOCK, P_TASK, P_TASK, recvStatus->MPI_SOURCE);
+
     Task newTask = getTask(recvBuffer[1], recvBuffer[2], recvBuffer[3]);
-    receive_task_from_librarian(newTask);
+    putParticipantList(&newTask, &recvBuffer[4], recvBuffer[3]);
+    update_librarian_max_taskID(newTask.libID, newTask.taskID);
+    if(newTask.poolSize == 1) {
+        addElem(newTask, onlyMyTasks);
+    } else {
+        addElem(newTask, taskSet);
+    }
 }
 
 void dealWithREQ(int *recvBuffer, MPI_Status *recvStatus) {
-    printf("PID %i : REQ Recv! from: %i\n", pid, recvStatus->MPI_SOURCE);
+    printCommRecv(pid, LAMPORT_CLOCK, P_REQ, P_TASK, recvStatus->MPI_SOURCE);
     int foundIndex = -1;
     Task *task;
     task = findTaskByID(recvBuffer[1], recvBuffer[2], true, &foundIndex); // check if task is pending
     
     if(foundIndex == -1){ //if not found
         int *maxID = get_librarian_max_taskID(recvBuffer[1], recvBuffer[2]);
-        if( *maxID < recvBuffer[2] && foundIndex != -3){ // if above task max id AND isNotDone -> add a new unreceived task
-            printf("PID %i : TASK Recv! from: %i\n", pid, recvStatus->MPI_SOURCE);
-            Task newTask = getTask(recvBuffer[1], recvBuffer[2], recvBuffer[3]);
-            sendACK(recvStatus->MPI_SOURCE, &newTask);
-            receive_task_from_conan(newTask);
+        if( *maxID < recvBuffer[2]){ // if above task max ID
+            sendACKRawParams(recvStatus->MPI_SOURCE, recvBuffer[1], recvBuffer[2], recvBuffer[3]);
         } // else it is already done
 
     } else if (foundIndex >= 0) { // if found and not finished
@@ -617,7 +653,8 @@ void dealWithREQ(int *recvBuffer, MPI_Status *recvStatus) {
 }
 
 void dealWithACK(int *recvBuffer, MPI_Status *recvStatus) {
-    printf("PID %i : ACK Recv! from: %i\n", pid, recvStatus->MPI_SOURCE);
+    printCommRecv(pid, LAMPORT_CLOCK, P_ACK, P_TASK, recvStatus->MPI_SOURCE);
+
     int foundIndex = -1;
     Task *task =  findTaskByID(recvBuffer[1], recvBuffer[2], true, &foundIndex); // check if task is pending
 
@@ -626,14 +663,14 @@ void dealWithACK(int *recvBuffer, MPI_Status *recvStatus) {
     } else if (foundIndex >= 0){ // else if it is pending
         //count ACK's; if you have full set, the task is yours
         task->ACK_count++;
-        if(task->ACK_count == task->poolSize-2){ // check for all ACK - group size - librarian and self
+        if(task->ACK_count >= task->poolSize-1){ // check for all ACK - group size - librarian and self
             if(!BUSY){
-                printf("   TASK ACCCEPTED BY PID %i   \n", pid);
-                broadcastRELEASE(task->libID, task->taskID);
+                printTask(STYLE_TASK, pid, LAMPORT_CLOCK, P_OBTAINING, task->libID, task->taskID);
+                broadcastRELEASE(task);
                 acceptTask(*task);
-                finish_task(foundIndex);
+                removeElem(foundIndex, taskSet);
             } else { // drop your turn
-                printf("   TASK DROPPED BY PID %i   \n", pid);
+                printCustomDebug(pid, LAMPORT_CLOCK, "TASK SKIPPED");
                 performPendingACK(task);
                 task->ACK_count = 0; // reset task
                 task->REQ_Lamport= -1; // mark it as new
@@ -643,15 +680,16 @@ void dealWithACK(int *recvBuffer, MPI_Status *recvStatus) {
 }
 
 void dealWithRELEASE(int *recvBuffer, MPI_Status *recvStatus) {
-    printf("PID %i : REL Recv! from: %i\n", pid, recvStatus->MPI_SOURCE);
+    printCommRecv(pid, LAMPORT_CLOCK, P_REL, P_TASK, recvStatus->MPI_SOURCE);
+
     int foundIndex = -1;
-    Task *task = findTaskByID(recvBuffer[1], recvBuffer[2], false, &foundIndex); // check if task is pending
+    Task *task = findTaskByID(recvBuffer[1], recvBuffer[2], false, &foundIndex); // check if task is on the list
 
     if(foundIndex == -1){ //if not
         //ignore it
     } else if (foundIndex >= 0){ // else if it is pending
-        printf("   TASK REMOVED BY PID %i   \n", pid);
-        finish_task(foundIndex);
+        printCustomDebug(pid, LAMPORT_CLOCK, "TASK REMOVED");
+        removeElem(foundIndex, taskSet);
     }
 }
 
@@ -698,13 +736,21 @@ void dealWithMessage(int *recvBuffer, MPI_Status *recvStatus) {
 
 void runConan_Loop() {
 
-    // TODO FIX
-    MPI_Buffer_attach(buf, bufSize);
+    // init mutex
+    pthread_mutex_init(&slipLock, NULL);
+    pthread_mutex_init(&washLock, NULL);
 
-    ROLE = 2;
+    // buffer
+    int messageMaxSize = 5 + conanCount;
+    int messageMaxSizeByte = messageMaxSize * sizeof(int) + MPI_BSEND_OVERHEAD;
+    int bufSizeByte = messageMaxSizeByte * conanCount;
 
-    taskSet = createTaskArray(taskBufferSize);
-    unreceivedTaskSet = createTaskArray(taskBufferSize);
+    int *buf = malloc(bufSizeByte);
+    MPI_Buffer_attach(buf, bufSizeByte);
+
+    ROLE = CONAN;
+
+    taskSet = createTaskArray(MAX_TASK_QUEGE_SIZE);
     libMaxTaskID = create_int_array(libCount, 2);
     int c = libCount*2;
     int libC = 0;
@@ -712,28 +758,36 @@ void runConan_Loop() {
         libMaxTaskID->array[i] = libC++;
         libMaxTaskID->array[i+1] = 0;
     }
+    slipQuege = create_int_array(MAX_LAMPORT_QUEGE_SIZE, 3);
+    washQuege = create_int_array(MAX_LAMPORT_QUEGE_SIZE, 3);
 
-    mainReceiver = createReceiver(4, MPI_INT, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD);
+    onlyMyTasks = createTaskArray(MAX_TASK_QUEGE_SIZE);
 
-    int recvMaxCounter = 10;
+    mainReceiver = createReceiver(messageMaxSize, MPI_INT, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD);
+
 
     while(true){
 
-        // REQ new tasks
         if(!BUSY){
-            for (int i=0; i<taskSet->top; i++){ //REQ all new tasks if not busy
-                if(taskSet->array[i].REQ_Lamport == -1){
-                    broadcastREQ(&taskSet->array[i]);
-                }
+            if(onlyMyTasks->top > 0){ // if have exclusive tasks
                 
+                printTask(STYLE_TASK, pid, LAMPORT_CLOCK, P_OBTAINING, onlyMyTasks->array[0].libID, onlyMyTasks->array[0].taskID);
+                acceptTask(onlyMyTasks->array[0]);
+                removeElem(0, onlyMyTasks);
+
+            } else { // REQ new tasks
+                for (int i=0; i<taskSet->top; i++){ //REQ all new tasks if not busy
+                    if(taskSet->array[i].isDone == 0){
+                        broadcastREQ(&taskSet->array[i]);
+                    }
+                }   
             }
-            tasksToREQ = 0;
         }
         
         // receive messages
         MPI_Status status;
         int recvFlag = 1;
-        recvMaxCounter = 10;
+        int recvMaxCounter = 10;
         while(recvFlag && recvMaxCounter-- >= 0){ 
             try_to_get_message(&mainReceiver, &recvFlag, &status);
             if(recvFlag){
@@ -751,11 +805,17 @@ void runConan_Loop() {
 
     destroyReceiver(&mainReceiver);
 
-    MPI_Buffer_detach(buf, &bufSize);
-
+    drop_int_array(slipQuege);
+    drop_int_array(washQuege);
+    dropTaskArray(onlyMyTasks);
     dropTaskArray(taskSet);
-    dropTaskArray(unreceivedTaskSet);
     drop_int_array(libMaxTaskID);
+
+    MPI_Buffer_detach(buf, &bufSizeByte);
+    free(buf);
+
+    pthread_mutex_destroy(&washLock);
+    pthread_mutex_destroy(&slipLock);
 }
 
 
@@ -796,19 +856,23 @@ void initAllMpiStructs() {
 
 int main(int argc, char **argv) {
 
+    //programm argumetns
+    libCount = 1;
+    slipQuegeCapacity = 1;
+    washQuegeCapacity = 1;
+    TASK_TIME = 8;
+    WASH_TIME = 4;
+    LIB_TIME = 4;
+
     // init process global variables
     LAMPORT_CLOCK = 0;
     BUSY = FREE;
     myDirtySlipCount = 0;
-    slipQuege = create_int_array(100, 3);
-    washQuege = create_int_array(100, 3);
-    // init mutex
-    pthread_mutex_init(&slipLock, NULL);
-    pthread_mutex_init(&washLock, NULL);
     // init MPI
 	MPI_Init(&argc, &argv);
 	MPI_Comm_size(MPI_COMM_WORLD, &pcount);
 	MPI_Comm_rank(MPI_COMM_WORLD, &pid);
+    conanCount = pcount - libCount;
 
     initAllMpiStructs();
 
@@ -817,9 +881,6 @@ int main(int argc, char **argv) {
     } else {
         runConan_Loop();
     }
-
-	pthread_mutex_destroy(&washLock);
-    pthread_mutex_destroy(&slipLock);
 
 	MPI_Finalize();
 }

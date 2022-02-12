@@ -11,7 +11,8 @@ typedef struct Task {
     int ACK_count;
     int* pending_ACK;
     int pending_ACK_count;
-    bool isDone;
+    int isDone; // 0 = no, 1 = req, 2 = yes
+    int* participants;
 } Task;
 
 typedef struct TaskSet {
@@ -29,6 +30,7 @@ void dropTaskArray(TaskSet *set);
 Task *findTask(int libID, int taskID, TaskSet *taskSet, int *outIndex);
 
 Task getTask(int libID, int taskID, int poolSize);
-void dropTask(Task task);
+void putParticipantList(Task *task, int *arr, int arrSize);
+void dropTask(Task *task);
 
 #endif

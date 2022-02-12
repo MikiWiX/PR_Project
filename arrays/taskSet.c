@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include <string.h>
 
 #include "taskSet.h"
 
@@ -17,9 +18,9 @@ TaskSet *createTaskArray(int len) {
 int addElem(Task elem, TaskSet *set) {
     if (set->top < set->len) {
         set->array[set->top++] = elem;
-        return 1;
+        return set->top - 1;
     } else {
-        return 0;
+        return -1;
     }
 }
 
@@ -34,7 +35,7 @@ int removeElemLeakign(int index, TaskSet *set) {
 
 int removeElem(int index, TaskSet *set) {
     if (set->top > 0) {
-        dropTask(set->array[index]);
+        dropTask(&set->array[index]);
         set->array[index] = set->array[set->top--];
         return 1;
     } else {
@@ -44,7 +45,7 @@ int removeElem(int index, TaskSet *set) {
 
 void dropTaskArray(TaskSet *set){
     for(int i=0; i<set->top; i++){
-        dropTask(set->array[i]);
+        dropTask(&set->array[i]);
     }
     free(set->array);
     free(set);
@@ -73,10 +74,16 @@ Task getTask(int libID, int taskID, int poolSize) {
     task.pending_ACK = malloc(poolSize*sizeof(int));
     task.pending_ACK_count = 0;
     task.isDone = false;
+    task.participants = malloc(poolSize * sizeof(int));
 
     return task;
 }
 
-void dropTask(Task task){
-    free(task.pending_ACK);
+void putParticipantList(Task *task, int *arr, int arrSize) {
+    memcpy(task->participants, arr, arrSize * sizeof(int));
+}
+
+void dropTask(Task *task){
+    free(task->pending_ACK);
+    free(task->participants);
 }
