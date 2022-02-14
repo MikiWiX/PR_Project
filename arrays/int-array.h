@@ -10,6 +10,8 @@ typedef struct int_array {
     int len;
 } int_array;
 
+void printArray(int_array *set);
+
 int_array *create_int_array(int size, int elemSize);
 bool areEqual(int *elem1, int* elem2, int count);
 bool isGreater(int *elem1, int *elem2, int count);

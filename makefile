@@ -11,4 +11,4 @@ compile: $(FILE) $(DEPS)
 	mpicc $(FILE) -O0 -lpthread
 
 run: 
-	mpirun -np 4 ./a.out
+	mpirun -np 6 ./a.out

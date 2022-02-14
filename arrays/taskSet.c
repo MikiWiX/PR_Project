@@ -3,6 +3,34 @@
 
 #include "taskSet.h"
 
+// void printArray(TaskSet *set) {
+//     char strOut[1000];
+//     // special case
+//     if(set->top == 0){
+//         printf("ARRAY ::: []\n");
+//         return;
+//     }
+    
+//     // main loop, without last iteration
+//     sprintf(strOut, "[ ");
+//     int savedChar = 2;
+//     char numberBuffer[100];
+    
+//     for (int i=0; i<set->top-1; i++){
+//         sprintf(numberBuffer, "[%i, %i], ", set->array[i].libID, set->array[i].taskID); // read number to string
+//         int numberLen = strlen(numberBuffer);
+//         memcpy(&strOut[savedChar], numberBuffer, numberLen); // append to output
+//         savedChar += numberLen; // increment value of chars signed
+//     }
+//     // last iteration
+//     if(set->top > 0){
+//         sprintf(&strOut[savedChar], "[%i, %i] ]", set->array[set->top-1].libID, set->array[set->top-1].taskID);
+
+//         printf("ARRAY ::: %s\n", strOut);
+//     }
+    
+// }
+
 TaskSet *createTaskArray(int len) {
 
     TaskSet *set = malloc(sizeof(TaskSet));
@@ -26,7 +54,7 @@ int addElem(Task elem, TaskSet *set) {
 
 int removeElemLeakign(int index, TaskSet *set) {
     if (set->top > 0) {
-        set->array[index] = set->array[set->top--];
+        set->array[index] = set->array[--set->top];
         return 1;
     } else {
         return 0;
@@ -36,7 +64,7 @@ int removeElemLeakign(int index, TaskSet *set) {
 int removeElem(int index, TaskSet *set) {
     if (set->top > 0) {
         dropTask(&set->array[index]);
-        set->array[index] = set->array[set->top--];
+        set->array[index] = set->array[--set->top];
         return 1;
     } else {
         return 0;

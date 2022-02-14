@@ -2,6 +2,7 @@
 #define TASK_SET_H_
 
 #include <stdbool.h>
+#include <stdio.h>
 
 typedef struct Task {
     int libID;
@@ -20,6 +21,8 @@ typedef struct TaskSet {
     int top;
     Task* array;
 } TaskSet;
+
+//void printArray(TaskSet *task);
 
 TaskSet *createTaskArray(int len);
 int addElem(Task elem, TaskSet* set);

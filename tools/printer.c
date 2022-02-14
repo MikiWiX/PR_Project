@@ -4,6 +4,8 @@
 
 #include "printer.h"
 
+const bool debugPrints = false;
+
 int getCharArraySize(int count) {
     if ( count >= 0 ) {
         return 13*count + 2;
@@ -81,7 +83,6 @@ void styledPrintln(char *style, int pid, int lamport, char* message) {
 }
 
 /// DEBUG PRINTS
-const bool debugPrints = true;
 #define DEBUG_STYLE "\e[2m"
 
 void printCommSend(int pid, int lamport, char *TYPE, char *OPname, int target) {

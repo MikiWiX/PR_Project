@@ -1,6 +1,38 @@
 #include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
 
 #include "int-array.h"
+
+void printArray(int_array *set) {
+    char strOut[1000];
+    // special case
+    if(set->top == 0){
+        printf("ARRAY ::: []\n");
+        return;
+    }
+    
+    // main loop, without last iteration
+    sprintf(strOut, "[ ");
+    int savedChar = 2;
+    char numberBuffer[100];
+    
+    for (int i=0; i<set->top-1; i++){
+        int realIndex = i * set->elemSize;
+        sprintf(numberBuffer, "[%i, %i, %i], ", set->array[realIndex], set->array[realIndex+1], set->array[realIndex+2]); // read number to string
+        int numberLen = strlen(numberBuffer);
+        memcpy(&strOut[savedChar], numberBuffer, numberLen); // append to output
+        savedChar += numberLen; // increment value of chars signed
+    }
+    // last iteration
+    if(set->top > 0){
+        int realIndex = (set->top-1) * set->elemSize;
+        sprintf(&strOut[savedChar], "[%i, %i, %i] ]", set->array[realIndex], set->array[realIndex+1], set->array[realIndex+2]);
+
+        printf("ARRAY ::: %s\n", strOut);
+    }
+    
+}
 
 int_array *create_int_array(int size, int elemSize) {
     int_array *set = malloc(sizeof(int_array));
@@ -32,8 +64,8 @@ bool isGreater(int *elem1, int *elem2, int count){
 }
 
 void set_element(int index, int *element, int_array *set){
-    int realIndex = index*set->elemSize;
-    for(int i=0; i<set->elemSize; i++){
+    int realIndex = index * set->elemSize;
+    for (int i=0; i<set->elemSize; i++){
         set->array[realIndex+i] = element[i];
     }
 }
@@ -59,23 +91,27 @@ int add_int(int *num, int_array *set) {
 }
 
 int add_int_ordered(int *num, int_array *set, int orderCount) {
-
+    
     if (set->top < set->len) {
 
         int index = set->top * set->elemSize;
         for(int i=set->top-1; i>=0; i--){ // for each element
             index -= set->elemSize;
-            if(!isGreater(&set->array[index], num, orderCount)){ //if new element index is lower
+            if(!isGreater(num, &set->array[index], orderCount)){ // if new element index is lower
                 move_element(i+1, i, set);
             } else {
                 set_element(i+1, num, set);
+                set->top++;
+                
                 return i+1;
             }
         }
         set_element(0, num, set); // lastly element 0
         set->top++;
+        
         return 0;
     } else {
+        
         return -1;
     }
 }
@@ -91,7 +127,7 @@ int remove_int(int index, int_array *set) {
 
 void remove_int_ordered(int index, int_array *set) {
     for(int i=index; i<set->top; i++){
-        move_element(index, index+1, set);
+        move_element(i, i+1, set);
     }
     set->top--;
 }
@@ -114,3 +150,36 @@ void drop_int_array(int_array *set){
     free(set->array);
     free(set);
 }
+
+
+// --- MODIFY BEFORE USING --- //
+
+// void printArray(int_array *set) {
+//     char strOut[1000];
+//     // special case
+//     if(set->top == 0){
+//         printf("ARRAY ::: []\n");
+//         return;
+//     }
+    
+//     // main loop, without last iteration
+//     sprintf(strOut, "[ ");
+//     int savedChar = 2;
+//     char numberBuffer[100];
+    
+//     for (int i=0; i<set->top-1; i++){
+//         int realIndex = i * set->elemSize;
+//         sprintf(numberBuffer, "[%i, %i, %i], ", set->array[realIndex], set->array[realIndex+1], set->array[realIndex+2]); // read number to string
+//         int numberLen = strlen(numberBuffer);
+//         memcpy(&strOut[savedChar], numberBuffer, numberLen); // append to output
+//         savedChar += numberLen; // increment value of chars signed
+//     }
+//     // last iteration
+//     if(set->top > 0){
+//         int realIndex = (set->top-1) * set->elemSize;
+//         sprintf(&strOut[savedChar], "[%i, %i, %i] ]", set->array[realIndex], set->array[realIndex+1], set->array[realIndex+2]);
+
+//         printf("ARRAY ::: %s\n", strOut);
+//     }
+    
+// }

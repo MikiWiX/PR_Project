@@ -205,11 +205,12 @@ void runLibrarian_Loop() {
         do {
             taskData[3] = getRandomArray(pidArr, conanCount, libCount);
         } while (taskData[3] <= 0);
-
-        int msgLen = 5 + taskData[3];
+        
         memcpy(&taskData[4], pidArr, taskData[3] * sizeof(int));
+        int msgLen = 5 + taskData[3];
 
-        printNewTask(STYLE_NEW, pid, LAMPORT_CLOCK, P_BROADCASTING, taskData[1], taskData[2], pidArr, taskData[3]);
+
+        printNewTask(STYLE_NEW, pid, LAMPORT_CLOCK, P_BROADCASTING, taskData[1], taskData[2], &taskData[4], taskData[3]);
 
         for (int i=0; i<taskData[3]; i++) {
             MPI_Bsend(taskData, msgLen, MPI_INT, pidArr[i], TASK_NEW, MPI_COMM_WORLD);
@@ -289,8 +290,8 @@ void broadcast(int *send_buffer, int libID, int buffer_size, int TAG) {
             break;
     }
     // TODO for each client in group
-    for(int i=0; i<pcount; i++){
-        if(i != libID && i != pid){
+    for(int i=libCount; i<pcount; i++){
+        if(i != pid){
             printCommSend(pid, LAMPORT_CLOCK, sendTAG, sendOP, i);
             MPI_Bsend(send_buffer, buffer_size, MPI_INT, i, TAG, MPI_COMM_WORLD);
         }
@@ -298,8 +299,8 @@ void broadcast(int *send_buffer, int libID, int buffer_size, int TAG) {
 }
 
 void sendLamport_ACK(int target, int originalREQLamport, int TAG) {
-    printCommSend(pid, LAMPORT_CLOCK, P_ACK, P_SLIP, target);
     int send_buffer[2] = {++LAMPORT_CLOCK, originalREQLamport};
+    printCommSend(pid, LAMPORT_CLOCK, P_ACK, P_SLIP, target);
     MPI_Bsend(send_buffer, 2, MPI_INT, target, TAG, MPI_COMM_WORLD);
 }
 
@@ -317,11 +318,13 @@ int getMinimumACK(int_array *set, int setCapacity) {
             
         }
     }
-    return conanCount-setCapacity+duplicates; // N-K+D
+   
+    return conanCount-(setCapacity-1)+duplicates; // N-(K-1)+D
 }
 
 bool checkIfElementIsIn(int index, int_array *set, int setCapacity, int requiredACK) {
-    if (index < setCapacity && *(get_int(index, set)+2) == conanCount-1){
+
+    if (index < setCapacity && get_int(index, set)[2] >= requiredACK){
         return true;
     }
     return false;
@@ -343,10 +346,10 @@ int myNextLamportIsIn(int startingIndex, int_array *set, int setCap, int require
 }
 
 int myNextLamportWentIn(int startingIndex, int_array *set, int setCap, int requiredACK) {
-    printf("requiredACK: %i\nsetCap: %i\n", requiredACK, setCap);
-    for(int i=startingIndex; i<setCap; i++){
     
+    for(int i=startingIndex; i<setCap; i++){
         int *elem = get_int(i, set);
+       
         if( elem[1] == pid &&
             checkIfElementIsIn(i, set, setCap, requiredACK) &&
             elem[0] > myLastSlipInLamportValue) {
@@ -357,7 +360,9 @@ int myNextLamportWentIn(int startingIndex, int_array *set, int setCap, int requi
     return -1;
 }
 
-void broadcastLamport_REQ(int_array *quege, int TAG) {
+void forEachElementEntered(int TAG, int_array *quege, int quegeCap);
+
+void broadcastLamport_REQ(int_array *quege, int quegeCap, int TAG) {
     int send_buffer[1] = {++LAMPORT_CLOCK};
     switch(TAG) {
         case SLIP_REQ:
@@ -371,35 +376,8 @@ void broadcastLamport_REQ(int_array *quege, int TAG) {
 
     int toAdd[3] = {LAMPORT_CLOCK, pid, 0};
     int index = add_int_ordered(toAdd, quege, 2);//add my req to list
+    forEachElementEntered(TAG, quege, quegeCap);
 }
-
-void acceptTask(Task task) {
-    ongoingTask = task;
-    BUSY = NEED_SLIPS;
-    broadcastLamport_REQ(slipQuege, SLIP_REQ);
-}
-
-
-void takeOffYoutPanties() {
-    pthread_mutex_lock(&slipLock);
-    washToRequest++; // mutex
-    pthread_mutex_unlock(&slipLock);
-}
-
-void *moonwalkingWithSLipsOnly_Thread() {
-    sleep(TASK_TIME);
-    takeOffYoutPanties();
-}
-
-void wearFreshSlips() {
-    BUSY = HAVE_SLIPS;
-    styledPrintln(STYLE_CUSTOM, pid, LAMPORT_CLOCK, "Going into the city...");
-    // task
-    pthread_t tid1;
-    pthread_create(&tid1, NULL, moonwalkingWithSLipsOnly_Thread, NULL);
-    pthread_detach(tid1);
-}
-
 
 void requestWash() {
     pthread_mutex_lock(&slipLock);
@@ -410,10 +388,9 @@ void requestWash() {
     for (int i=0; i<local; i++){
         BUSY = FREE;
         myDirtySlipCount++; 
-        broadcastLamport_REQ(washQuege, WASH_REQ);
+        broadcastLamport_REQ(washQuege, washQuegeCapacity, WASH_REQ);
     }
 }
-
 
 void putCleanButUsedPantiesBack() {
     pthread_mutex_lock(&washLock);
@@ -435,12 +412,31 @@ void putDirtyNastySlipsToWash() {
     pthread_detach(tid2);
 }
 
+void takeOffYoutPanties() {
+    pthread_mutex_lock(&slipLock);
+    washToRequest++; // mutex
+    pthread_mutex_unlock(&slipLock);
+}
+
+void *moonwalkingWithSLipsOnly_Thread() {
+    sleep(TASK_TIME);
+    takeOffYoutPanties();
+}
+
+void wearFreshSlips() {
+    BUSY = HAVE_SLIPS;
+    styledPrintln(STYLE_CUSTOM, pid, LAMPORT_CLOCK, "Going into the city...");
+    // task
+    pthread_t tid1;
+    pthread_create(&tid1, NULL, moonwalkingWithSLipsOnly_Thread, NULL);
+    pthread_detach(tid1);
+}
 
 void forEachElementEntered(int TAG, int_array *quege, int quegeCap){
 
     int minACK = getMinimumACK(quege, quegeCap);
     int myIndex = myNextLamportWentIn(0, quege, quegeCap, minACK);
-    printf("myIndex: %i\n", myIndex);
+    
     if(myIndex >= 0) {
         int *elem = get_int(myIndex, quege);
         while (myIndex >= 0){
@@ -467,6 +463,12 @@ void forEachElementEntered(int TAG, int_array *quege, int quegeCap){
     }
 }
 
+void acceptTask(Task task) {
+    ongoingTask = task;
+    BUSY = NEED_SLIPS;
+    broadcastLamport_REQ(slipQuege, slipQuegeCapacity, SLIP_REQ);
+}
+
 void broadcastLamport_REL(int_array *quege, int quegeCap, int TAG, int index) {
     int *elem = get_int(index, quege);
     int send_buffer[2] = {++LAMPORT_CLOCK, elem[0]};
@@ -481,13 +483,19 @@ void broadcastLamport_REL(int_array *quege, int quegeCap, int TAG, int index) {
     broadcast(send_buffer, 0, 2, TAG);
 
     int lamportOut;
-    int index1 = find_my_lamport(1, quege, &lamportOut);// send ACK to all between my requests 1 and 2 in order
-    int index2 = find_my_lamport(2, quege, &lamportOut);
+    int index1 = find_my_lamport(0, quege, &lamportOut);// send ACK to all between my requests 1 and 2 in order
+    int index2 = find_my_lamport(1, quege, &lamportOut);
     for(int i=index1+1; i<index2; i++){
         int *elem = get_int(i, quege);
-        sendLamport_ACK(elem[1], elem[0], TAG);
+        switch(TAG){
+            case SLIP_REL:
+                sendLamport_ACK(elem[1], elem[0], SLIP_ACK);
+                break;
+            case WASH_REL:
+                sendLamport_ACK(elem[1], elem[0], WASH_ACK);
+                break;
+        }
     }
-
     remove_int_ordered(index, quege);
     forEachElementEntered(TAG, quege, quegeCap);
 }
@@ -545,6 +553,7 @@ void dealWithLamport_REQ(int *recvBuffer, MPI_Status *recvStatus, int_array *que
     int index = add_int_ordered(buffer, quege, 2);
     int lamportOut;
     int myFirst = find_my_lamport(0, quege, &lamportOut);
+    
     if( index <= myFirst && index >= 0 || myFirst == -1 ) { //if it went before my first REQ
         sendACKbyTAG(recvStatus->MPI_SOURCE, recvBuffer[0], recvStatus->MPI_TAG);
     }
@@ -552,7 +561,14 @@ void dealWithLamport_REQ(int *recvBuffer, MPI_Status *recvStatus, int_array *que
 
 
 void dealWithLamport_REL(int *recvBuffer, MPI_Status *recvStatus, int_array *quege, int quegeCap) {
-    printCommRecv(pid, LAMPORT_CLOCK, P_REL, P_SLIP,recvStatus->MPI_SOURCE);
+    switch(recvStatus->MPI_TAG){
+        case SLIP_REL:
+            printCommRecv(pid, LAMPORT_CLOCK, P_REL, P_SLIP, recvStatus->MPI_SOURCE);
+            break;
+        case WASH_REL:
+            printCommRecv(pid, LAMPORT_CLOCK, P_REL, P_WASH, recvStatus->MPI_SOURCE);
+            break;
+    }
     int index = find_any_lamport_by_value(recvBuffer[1], recvStatus->MPI_SOURCE, quege); 
     if(index != -1){ // search for REQ and remove it; check if my occurences are inside critical section
         remove_int_ordered(index, quege);
@@ -600,7 +616,7 @@ void broadcastREQ(Task *task){
     // TODO for each client in group
     for(int i=0; i<task->poolSize; i++){
         if(task->participants[i] != pid){
-            printCommSend(pid, LAMPORT_CLOCK, P_REQ, P_TASK, i);
+            printCommSend(pid, LAMPORT_CLOCK, P_REQ, P_TASK, task->participants[i]);
             MPI_Bsend(sendBuffer, 4, MPI_INT, task->participants[i], TASK_REQ, MPI_COMM_WORLD);
         }
     }
@@ -857,12 +873,12 @@ void initAllMpiStructs() {
 int main(int argc, char **argv) {
 
     //programm argumetns
-    libCount = 1;
-    slipQuegeCapacity = 1;
-    washQuegeCapacity = 1;
+    libCount = 2;
+    slipQuegeCapacity = 3;
+    washQuegeCapacity = 2;
     TASK_TIME = 8;
     WASH_TIME = 4;
-    LIB_TIME = 4;
+    LIB_TIME = 10;
 
     // init process global variables
     LAMPORT_CLOCK = 0;
@@ -876,7 +892,7 @@ int main(int argc, char **argv) {
 
     initAllMpiStructs();
 
-    if(pid == 0){
+    if(pid < libCount){
         runLibrarian_Loop();
     } else {
         runConan_Loop();
