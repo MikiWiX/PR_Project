@@ -17,6 +17,7 @@ ReceiverData createReceiver(int count, MPI_Datatype datatype, int source, int ta
 void try_recv(ReceiverData *data, int *recvFlag, MPI_Status *recvStatus);
 void try_to_get_message(ReceiverData *data, int *recvFlag, MPI_Status *recvStatus);
 void start_new_receive(ReceiverData *data);
+void blocking_receive(ReceiverData *data, MPI_Status *recvStatus);
 void destroyReceiver(ReceiverData *data);
 
 #endif

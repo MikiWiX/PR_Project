@@ -193,19 +193,30 @@ void runLibrarian_Loop() {
 
     int pidArr[conanCount];
 
+    //OVERRIDE IF YOU WANT
+    int desiredPidArrSize = 0;
+    int desiredPidArr[] = {};
+
     time_t t;
-    srand((unsigned) time(&t));
+    srand((unsigned) time(&t)+pid);
 
     while(true){
         taskData[0]++;
         taskData[2]++;
         // Broadcast lamport, libID, taskID
 
-        // 'randomly' draw proecss to involve
-        do {
-            taskData[3] = getRandomArray(pidArr, conanCount, libCount);
-        } while (taskData[3] <= 0);
-        
+        if(desiredPidArrSize > 0){
+
+            // use those predefined values
+            taskData[3] = desiredPidArrSize;
+            memcpy(pidArr, desiredPidArr, desiredPidArrSize * sizeof(int));
+        } else {
+
+            // 'randomly' draw process to involve
+            do {
+                taskData[3] = getRandomArray(pidArr, conanCount, libCount);
+            } while (taskData[3] <= 0);
+        }
         memcpy(&taskData[4], pidArr, taskData[3] * sizeof(int));
         int msgLen = 5 + taskData[3];
 
@@ -300,7 +311,14 @@ void broadcast(int *send_buffer, int libID, int buffer_size, int TAG) {
 
 void sendLamport_ACK(int target, int originalREQLamport, int TAG) {
     int send_buffer[2] = {++LAMPORT_CLOCK, originalREQLamport};
-    printCommSend(pid, LAMPORT_CLOCK, P_ACK, P_SLIP, target);
+    switch(TAG){
+        case SLIP_ACK:
+            printCommSend(pid, LAMPORT_CLOCK, P_ACK, P_SLIP, target);
+            break;
+        case WASH_ACK:
+            printCommSend(pid, LAMPORT_CLOCK, P_ACK, P_WASH, target);
+            break;
+    }
     MPI_Bsend(send_buffer, 2, MPI_INT, target, TAG, MPI_COMM_WORLD);
 }
 
@@ -386,8 +404,12 @@ void requestWash() {
     pthread_mutex_unlock(&slipLock);
 
     for (int i=0; i<local; i++){
-        BUSY = FREE;
+
+        pthread_mutex_lock(&washLock);
         myDirtySlipCount++; 
+        pthread_mutex_unlock(&washLock);
+
+        BUSY = FREE;
         broadcastLamport_REQ(washQuege, washQuegeCapacity, WASH_REQ);
     }
 }
@@ -395,6 +417,7 @@ void requestWash() {
 void putCleanButUsedPantiesBack() {
     pthread_mutex_lock(&washLock);
     myCleanSlips++;
+    myDirtySlipCount--;
     pthread_mutex_unlock(&washLock);
 }
 
@@ -404,7 +427,6 @@ void *slipDisinfect_Thread() {
 }
 
 void putDirtyNastySlipsToWash() {
-    myDirtySlipCount--;
     styledPrintln(STYLE_CUSTOM, pid, LAMPORT_CLOCK, "Cleaning slips with love and passion...");
     // task
     pthread_t tid2;
@@ -485,6 +507,9 @@ void broadcastLamport_REL(int_array *quege, int quegeCap, int TAG, int index) {
     int lamportOut;
     int index1 = find_my_lamport(0, quege, &lamportOut);// send ACK to all between my requests 1 and 2 in order
     int index2 = find_my_lamport(1, quege, &lamportOut);
+    if(index2 == -1){
+        index2 = quege->top;
+    }
     for(int i=index1+1; i<index2; i++){
         int *elem = get_int(i, quege);
         switch(TAG){
@@ -536,26 +561,30 @@ void dealWithLamport_ACK(int *recvBuffer, MPI_Status *recvStatus, int_array *que
 
 }
 
-void sendACKbyTAG(int source, int lamport, int TAG) {
-    switch(TAG){
+void dealWithLamport_REQ(int *recvBuffer, MPI_Status *recvStatus, int_array *quege, int quegeCap) {
+    switch(recvStatus->MPI_TAG){
         case SLIP_REQ:
-            sendLamport_ACK(source, lamport, SLIP_ACK);
+            printCommRecv(pid, LAMPORT_CLOCK, P_REQ, P_SLIP, recvStatus->MPI_SOURCE);
             break;
         case WASH_REQ:
-            sendLamport_ACK(source, lamport, WASH_ACK);
+            printCommRecv(pid, LAMPORT_CLOCK, P_REQ, P_WASH, recvStatus->MPI_SOURCE);
             break;
     }
-} 
-
-void dealWithLamport_REQ(int *recvBuffer, MPI_Status *recvStatus, int_array *quege, int quegeCap) {
-    printCommRecv(pid, LAMPORT_CLOCK, P_REQ, P_SLIP, recvStatus->MPI_SOURCE);
     int buffer[3] = {recvBuffer[0], recvStatus->MPI_SOURCE, 0}; // source lamport, source PID, ACK counter
     int index = add_int_ordered(buffer, quege, 2);
     int lamportOut;
     int myFirst = find_my_lamport(0, quege, &lamportOut);
     
     if( index <= myFirst && index >= 0 || myFirst == -1 ) { //if it went before my first REQ
-        sendACKbyTAG(recvStatus->MPI_SOURCE, recvBuffer[0], recvStatus->MPI_TAG);
+
+        switch(recvStatus->MPI_TAG){
+            case SLIP_REQ:
+                sendLamport_ACK(recvStatus->MPI_SOURCE, recvBuffer[0], SLIP_ACK);
+                break;
+            case WASH_REQ:
+                sendLamport_ACK(recvStatus->MPI_SOURCE, recvBuffer[0], WASH_ACK);
+                break;
+        }
     }
 }
 
@@ -800,17 +829,33 @@ void runConan_Loop() {
             }
         }
         
+        // if  !BUSY && !dirtySlip && !cleanSlip && !washToRequest ---> Blocking RECV, nothing else to do
+        pthread_mutex_lock(&slipLock);
+        pthread_mutex_lock(&washLock);
+        int onlyRevceive = !BUSY && !myDirtySlipCount && !myCleanSlips && !washToRequest;
+        pthread_mutex_unlock(&washLock);
+        pthread_mutex_unlock(&slipLock);
+
         // receive messages
         MPI_Status status;
         int recvFlag = 1;
-        int recvMaxCounter = 10;
-        while(recvFlag && recvMaxCounter-- >= 0){ 
+        int recvCounter = 0;
+        if(onlyRevceive){ // if no message yet and this is the first iteration after state checking
+            // do blocking recv
+            blocking_receive(&mainReceiver, &status);
+            updateLamportClock(*((int*)mainReceiver.buf));
+            dealWithMessage(mainReceiver.buf, &status);
+            start_new_receive(&mainReceiver);
+        }
+        while(recvFlag && recvCounter++ <= 5){ // non blocking try to receive up to X times
+            
             try_to_get_message(&mainReceiver, &recvFlag, &status);
             if(recvFlag){
                 
                 updateLamportClock(*((int*)mainReceiver.buf));
                 dealWithMessage(mainReceiver.buf, &status);
                 start_new_receive(&mainReceiver);
+                 
             }
         }
 
@@ -876,9 +921,9 @@ int main(int argc, char **argv) {
     libCount = 2;
     slipQuegeCapacity = 3;
     washQuegeCapacity = 2;
-    TASK_TIME = 8;
-    WASH_TIME = 4;
-    LIB_TIME = 10;
+    TASK_TIME = 10;
+    WASH_TIME = 7;
+    LIB_TIME = 30;
 
     // init process global variables
     LAMPORT_CLOCK = 0;

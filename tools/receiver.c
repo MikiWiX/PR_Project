@@ -43,6 +43,10 @@ void start_new_receive(ReceiverData *data) {
     MPI_Irecv(data->buf, data->count, data->datatype, data->source, data->tag, data->comm, &data->req);
 }
 
+void blocking_receive(ReceiverData *data, MPI_Status *recvStatus) {
+    MPI_Wait(&data->req, recvStatus);
+}
+
 void destroyReceiver(ReceiverData *data) {
     MPI_Request_free(&data->req);
     free(data->buf);
