@@ -337,7 +337,7 @@ int getMinimumACK(int_array *set, int setCapacity) {
         }
     }
    
-    return conanCount-(setCapacity-1)+duplicates; // N-(K-1)+D
+    return conanCount-setCapacity+duplicates; // N-K+D
 }
 
 bool checkIfElementIsIn(int index, int_array *set, int setCapacity, int requiredACK) {
@@ -919,11 +919,11 @@ int main(int argc, char **argv) {
 
     //programm argumetns
     libCount = 2;
-    slipQuegeCapacity = 3;
-    washQuegeCapacity = 2;
+    slipQuegeCapacity = 2;
+    washQuegeCapacity = 1;
     TASK_TIME = 10;
-    WASH_TIME = 7;
-    LIB_TIME = 30;
+    WASH_TIME = 10;
+    LIB_TIME = 5;
 
     // init process global variables
     LAMPORT_CLOCK = 0;
